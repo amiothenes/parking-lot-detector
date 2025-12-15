@@ -93,9 +93,6 @@ async def detect(request: Request):
 
     start_total = time.time()
 
-    # ===========================================
-    # INITIALIZATION MODE: Classical CV spot detection
-    # ===========================================
     if mode == "init" or (not is_initialized and mode == "auto"):
         print("[API] Running initialization - Classical CV spot detection")
 
@@ -145,9 +142,6 @@ async def detect(request: Request):
 
         return JSONResponse(response)
 
-    # ===========================================
-    # DETECTION MODE: Vehicle detection + occupancy
-    # ===========================================
     if not is_initialized:
         return JSONResponse(
             {
@@ -159,7 +153,6 @@ async def detect(request: Request):
 
     print("[API] Running detection - Vehicle detection")
 
-    # Run vehicle detection
     try:
         vehicle_detector = get_vehicle_detector()
         vehicle_result = vehicle_detector.detect(img_bytes)

@@ -114,7 +114,7 @@ class VehicleDetector:
         blobs = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area > 2000 and area < 100000: # Filter noise
+            if area > 2000 and area < 100000:
                 x, y, w, h = cv2.boundingRect(cnt)
                 bbox = {
                     "x1": float(x), "y1": float(y), "x2": float(x+w), "y2": float(y+h),
