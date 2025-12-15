@@ -53,7 +53,7 @@ export function CameraDetection() {
 
     // STEP 2: Initialize if needed
     if (!status.initialized) {
-      const initRes = await fetch("/api/detect?mode=init&debug=true", {
+      const initRes = await fetch("/api/detect?mode=init", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -67,15 +67,10 @@ export function CameraDetection() {
 
       const initResult = await initRes.json();
       console.log("Initialization result:", initResult);
-
-      // Optional: show classical CV debug image
-      if (initResult.debugImage) {
-        setOutputImage(initResult.debugImage);
-      }
     }
 
-    // STEP 3: Run vehicle detection
-    const detectRes = await fetch("/api/detect?mode=detect", {
+    // STEP 3: Run vehicle detection WITH debug image
+    const detectRes = await fetch("/api/detect?debug=true", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -91,6 +86,11 @@ export function CameraDetection() {
     console.log("Detection result:", detectResult);
 
     setDetections(detectResult);
+
+    // Show the debug image from detection
+    if (detectResult.debugImage) {
+      setOutputImage(detectResult.debugImage);
+    }
 
   } catch (err) {
     console.error(err);

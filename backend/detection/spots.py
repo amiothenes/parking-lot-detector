@@ -27,9 +27,11 @@ class SpotDetector:
     def __init__(self, config: dict = None):
         default_config = {
             "white_thresh": 160,
+            "saturation_max": 50,
             "peak_threshold": 0.5,
             "min_spot_gap": 35,
-            "min_spot_width": 60, 
+            "min_spot_width": 60,
+            "edge_margin_percent": 0.15,
             
             "occupancy_edge_threshold": 0.04,
             "padding": 15               
@@ -44,17 +46,28 @@ class SpotDetector:
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         height, width = image.shape[:2]
 
-        # 1. Masking
         start = time.time()
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, mask = cv2.threshold(blur, self.config["white_thresh"], 255, cv2.THRESH_BINARY)
+        
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        saturation = hsv[:, :, 1]
+        
+        bright_mask = blur > self.config["white_thresh"]
+        low_sat_mask = saturation < self.config["saturation_max"]
+        mask = (bright_mask & low_sat_mask).astype(np.uint8) * 255
+        
         timing["masking_ms"] = round((time.time() - start) * 1000, 2)
 
-        # 2. Auto-Orientation (Variance Method)
+        edge_margin = int(height * self.config["edge_margin_percent"])
+        
+        mask_filtered = mask.copy()
+        mask_filtered[:edge_margin, :] = 0
+        mask_filtered[height - edge_margin:, :] = 0
+
         start = time.time()
-        v_proj = np.sum(mask, axis=0)
-        h_proj = np.sum(mask, axis=1)
+        v_proj = np.sum(mask_filtered, axis=0)
+        h_proj = np.sum(mask_filtered, axis=1)
         
         v_norm = v_proj / (np.max(v_proj) + 1e-5)
         h_norm = h_proj / (np.max(h_proj) + 1e-5)
@@ -66,13 +79,11 @@ class SpotDetector:
         orientation = "unknown"
 
         if h_var > v_var: 
-            # TOY CAR LAYOUT (Horizontal Lines are distinct)
             orientation = "vertical"
             spine_pos = self._find_peak_center(v_proj, width)
-            dividers = self._find_peaks(h_proj, height)
-            spots = self._make_vertical_spots(spine_pos, dividers, width, height)
+            dividers = self._find_peaks(h_proj, height, edge_margin, height - edge_margin)
+            spots = self._make_vertical_spots(spine_pos, dividers, width, height, edge_margin)
         else:
-            # REAL CAR LAYOUT (Vertical Lines are distinct)
             orientation = "horizontal"
             spine_pos = self._find_peak_center(h_proj, height)
             dividers = self._find_peaks(v_proj, width)
@@ -80,9 +91,7 @@ class SpotDetector:
 
         timing["construct_ms"] = round((time.time() - start) * 1000, 2)
 
-        # 3. Occupancy
         start = time.time()
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         for spot in spots:
             spot.occupied = self._check_occupancy(hsv, spot.bbox)
         timing["occupancy_ms"] = round((time.time() - start) * 1000, 2)
@@ -103,11 +112,16 @@ class SpotDetector:
         if len(indices) == 0: return length // 2
         return int(np.mean(indices))
 
-    def _find_peaks(self, hist: np.ndarray, length: int) -> List[int]:
+    def _find_peaks(self, hist: np.ndarray, length: int, min_pos: int = 0, max_pos: int = None) -> List[int]:
+        if max_pos is None:
+            max_pos = length
+            
         mx = np.max(hist)
-        if mx == 0: return [0, length]
+        if mx == 0: return [min_pos, max_pos]
         thresh = mx * self.config["peak_threshold"]
         indices = np.where(hist > thresh)[0]
+        
+        indices = indices[(indices >= min_pos) & (indices <= max_pos)]
         
         peaks = []
         if len(indices) > 0:
@@ -119,15 +133,28 @@ class SpotDetector:
                     peaks.append(int(np.mean(cluster)))
                     cluster = [indices[i]]
             peaks.append(int(np.mean(cluster)))
+        
         return peaks
 
-    def _make_vertical_spots(self, spine_x, y_divs, w, h):
+    def _make_vertical_spots(self, spine_x, y_divs, w, h, edge_margin):
         spots = []
         if len(y_divs) < 2: return []
-        row_char = 65 
-        for i in range(len(y_divs) - 1):
-            y1, y2 = y_divs[i], y_divs[i+1]
-            if (y2 - y1) < self.config["min_spot_gap"]: continue
+        
+        filtered_divs = [d for d in y_divs if edge_margin <= d <= h - edge_margin]
+        if len(filtered_divs) < 2:
+            return []
+        
+        min_height = self.config.get("min_spot_width", 60)
+        final_divs = [filtered_divs[0]]
+        for i in range(1, len(filtered_divs)):
+            if filtered_divs[i] - final_divs[-1] >= min_height:
+                final_divs.append(filtered_divs[i])
+        
+        row_char = 65  # 'A'
+        for i in range(len(final_divs) - 1):
+            y1, y2 = final_divs[i], final_divs[i+1]
+            if (y2 - y1) < self.config["min_spot_gap"]: 
+                continue
             spots.append(self._create_spot(f"{chr(row_char)}1", 0, y1, spine_x, y2))
             spots.append(self._create_spot(f"{chr(row_char)}2", spine_x, y1, w, y2))
             row_char += 1
@@ -137,7 +164,6 @@ class SpotDetector:
         spots = []
         if len(x_divs) < 2: return []
         
-        # Filter out dividers that are too close together
         filtered_divs = [x_divs[0]]
         min_width = self.config.get("min_spot_width", 60)
         
@@ -171,38 +197,35 @@ class SpotDetector:
         if x2 <= x1 or y2 <= y1: 
             return False
         
-        # Convert ROI to grayscale for edge detection
         roi_bgr = cv2.cvtColor(hsv_image[y1:y2, x1:x2], cv2.COLOR_HSV2BGR)
         roi_gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
         
-        # Detect edges - cars have many edges, empty pavement has few
         edges = cv2.Canny(roi_gray, 50, 150)
         
-        # Calculate edge density
         edge_pixels = np.count_nonzero(edges)
         total_pixels = edges.size
         edge_density = edge_pixels / total_pixels if total_pixels > 0 else 0
         
-        # Threshold: cars typically have >5% edge density, empty spots <3%
         return edge_density > self.config.get("occupancy_edge_threshold", 0.04)
 
     def generate_debug_image(self, image_bytes: bytes, result, occupancy_results: list = None, vehicles: list = None) -> bytes:
         nparr = np.frombuffer(image_bytes, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        # Build occupancy lookup from analyzer results
         occ_lookup = {}
         if occupancy_results:
+            print(f"[DEBUG] Building occupancy lookup from {len(occupancy_results)} results")
             for occ in occupancy_results:
                 spot_id = occ.spot.id if hasattr(occ, 'spot') else occ.get('id')
                 is_occupied = occ.occupied if hasattr(occ, 'occupied') else occ.get('occupied', False)
                 occ_lookup[spot_id] = is_occupied
+                print(f"[DEBUG] Spot {spot_id}: occupied={is_occupied}")
+        else:
+            print("[DEBUG] No occupancy_results provided - using edge-based fallback")
         
-        # 1. Draw Spots
         for spot in result.spots:
             pts = np.array(spot.corners, np.int32).reshape((-1, 1, 2))
             
-            # Use occupancy analyzer result if available, else fall back to edge-based
             is_occupied = occ_lookup.get(spot.id, spot.occupied)
             
             if is_occupied:
@@ -215,7 +238,6 @@ class SpotDetector:
             cv2.putText(image, spot.id, (spot.bbox["x1"]+10, spot.bbox["y1"]+30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
-        # 2. Draw Vehicles (Cyan Boxes)
         if vehicles:
             for v in vehicles:
                 bbox = v.bbox if hasattr(v, 'bbox') else v.get('bbox')
@@ -230,9 +252,23 @@ class SpotDetector:
         _, buffer = cv2.imencode(".png", image)
         return buffer.tobytes()
 
+
 def spot_to_dict(spot: ParkingSpot) -> dict:
     return {
-        "id": spot.id, "occupied": spot.occupied, "corners": [ [int(c[0]), int(c[1])] for c in spot.corners ],
-        "bbox": { "x1": int(spot.bbox["x1"]), "y1": int(spot.bbox["y1"]), "x2": int(spot.bbox["x2"]), "y2": int(spot.bbox["y2"]), "width": int(spot.bbox["width"]), "height": int(spot.bbox["height"]), "centerX": float(spot.bbox["centerX"]), "centerY": float(spot.bbox["centerY"]) },
-        "angle": float(round(spot.angle, 2)), "area": float(round(spot.area, 2)), "confidence": float(round(spot.confidence, 3))
+        "id": spot.id, 
+        "occupied": spot.occupied, 
+        "corners": [[int(c[0]), int(c[1])] for c in spot.corners],
+        "bbox": {
+            "x1": int(spot.bbox["x1"]), 
+            "y1": int(spot.bbox["y1"]), 
+            "x2": int(spot.bbox["x2"]), 
+            "y2": int(spot.bbox["y2"]), 
+            "width": int(spot.bbox["width"]), 
+            "height": int(spot.bbox["height"]), 
+            "centerX": float(spot.bbox["centerX"]), 
+            "centerY": float(spot.bbox["centerY"])
+        },
+        "angle": float(round(spot.angle, 2)), 
+        "area": float(round(spot.area, 2)), 
+        "confidence": float(round(spot.confidence, 3))
     }

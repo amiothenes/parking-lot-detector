@@ -31,7 +31,7 @@ parking_spots = []
 is_initialized = False
 image_size = {"width": 0, "height": 0}
 debug_data = {}
-last_cv_result = None  # Store the last CV result for debug images
+last_cv_result = None
 
 spot_detector = SpotDetector()
 occupancy_analyzer = OccupancyAnalyzer()
@@ -97,7 +97,7 @@ async def detect(request: Request):
         print("[API] Running initialization - Classical CV spot detection")
 
         cv_result = spot_detector.detect(img_bytes)
-        last_cv_result = cv_result  # Store for later debug images
+        last_cv_result = cv_result
 
         parking_spots = cv_result.spots
         image_size = {"width": cv_result.image_size[0], "height": cv_result.image_size[1]}
@@ -130,7 +130,6 @@ async def detect(request: Request):
             "imageSize": image_size,
         }
 
-        # For init mode, generate debug with edge-based occupancy (no vehicles yet)
         if debug:
             debug_image = spot_detector.generate_debug_image(
                 img_bytes,
@@ -163,7 +162,6 @@ async def detect(request: Request):
             status_code=500,
         )
 
-    # Calculate occupancy using IoU with detected vehicles
     occupancy_result = occupancy_analyzer.analyze(parking_spots, vehicles_list)
 
     total_time = round((time.time() - start_total) * 1000, 2)
@@ -186,9 +184,7 @@ async def detect(request: Request):
         },
     }
 
-    # Generate debug image with occupancy results (matches JSON output)
     if debug:
-        # Create a minimal result object for the debug image
         class MinimalResult:
             def __init__(self, spots):
                 self.spots = spots
