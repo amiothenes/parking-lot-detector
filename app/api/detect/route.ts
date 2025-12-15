@@ -1,52 +1,29 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from "next/server";
 
-export async function POST(request: NextRequest) {
-  try {
-    const { image } = await request.json();
+const PY_BASE = process.env.PY_BACKEND_URL ?? "http://127.0.0.1:8000";
 
-    if (!image) {
-      return NextResponse.json(
-        { error: 'Image is required' },
-        { status: 400 }
-      );
-    }
+async function forward(req: NextRequest) {
+  const url = new URL(req.url);
+  const target = `${PY_BASE}${url.pathname}${url.search}`;
 
-    const apiKey = process.env.ROBOFLOW_API_KEY;
-    
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: 'API key not configured' },
-        { status: 500 }
-      );
-    }
+  const body = await req.arrayBuffer();
 
-    const response = await fetch(
-      'https://serverless.roboflow.com/victor-c99mj/workflows/find-cars-black-jetta-cars-and-blue-cars-3',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          api_key: apiKey,
-          inputs: {
-            image: { type: 'url', value: image },
-          },
-        }),
-      }
-    );
+  const res = await fetch(target, {
+    method: req.method,
+    headers: {
+      "content-type": req.headers.get("content-type") ?? "",
+    },
+    body: body.byteLength ? body : undefined,
+  });
 
-    if (!response.ok) {
-      throw new Error(`Roboflow API error: ${response.statusText}`);
-    }
+  const contentType = res.headers.get("content-type") ?? "";
+  const data = contentType.includes("application/json")
+    ? await res.json()
+    : await res.text();
 
-    const result = await response.json();
-    return NextResponse.json(result);
-  } catch (error) {
-    console.error('Detection error:', error);
-    return NextResponse.json(
-      { error: 'Failed to process detection' },
-      { status: 500 }
-    );
-  }
+  return NextResponse.json(data, { status: res.status });
 }
+
+export async function POST(req: NextRequest) { return forward(req); }
+export async function GET(req: NextRequest) { return forward(req); }
+export async function DELETE(req: NextRequest) { return forward(req); }

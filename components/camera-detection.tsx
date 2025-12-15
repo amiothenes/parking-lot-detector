@@ -38,97 +38,68 @@ export function CameraDetection() {
   };
 
   const runDetection = async () => {
-    if (!selectedImage) {
-      setError("Please upload an image first.");
-      return;
+  if (!selectedImage) {
+    setError("Please upload an image first.");
+    return;
+  }
+
+  setIsDetecting(true);
+  setError("");
+
+  try {
+    // STEP 1: Check pipeline status
+    const statusRes = await fetch("/api/detect");
+    const status = await statusRes.json();
+
+    // STEP 2: Initialize if needed
+    if (!status.initialized) {
+      const initRes = await fetch("/api/detect?mode=init&debug=true", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageBase64: selectedImage,
+        }),
+      });
+
+      if (!initRes.ok) {
+        throw new Error("Initialization failed");
+      }
+
+      const initResult = await initRes.json();
+      console.log("Initialization result:", initResult);
+
+      // Optional: show classical CV debug image
+      if (initResult.debugImage) {
+        setOutputImage(initResult.debugImage);
+      }
     }
 
-    setIsDetecting(true);
-    setError("");
+    // STEP 3: Run vehicle detection
+    const detectRes = await fetch("/api/detect?mode=detect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        imageBase64: selectedImage,
+      }),
+    });
 
-    try {
-      const response = await fetch(
-        process.env.NEXT_PUBLIC_ROBOFLOW_WORKFLOW_URL!,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            api_key: process.env.NEXT_PUBLIC_ROBOFLOW_API_KEY,
-            inputs: {
-              image: { type: "url", value: selectedImage },
-            },
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error("Detection failed");
-      }
-
-      const result = await response.json();
-      console.log("Full API Response:", JSON.stringify(result, null, 2));
-      setDetections(result);
-
-      // Extract visualization from the response
-      let visualizationUrl = null;
-
-      // The response has an "outputs" array
-      if (
-        result.outputs &&
-        Array.isArray(result.outputs) &&
-        result.outputs.length > 0
-      ) {
-        const firstOutput = result.outputs[0];
-
-        if (firstOutput.visualization) {
-          const viz = firstOutput.visualization;
-          console.log("Visualization object:", viz);
-
-          // Handle different visualization formats
-          if (viz.type === "base64" && viz.value) {
-            // It's a base64 encoded image
-            visualizationUrl = `data:image/jpeg;base64,${viz.value}`;
-            console.log(
-              "Created base64 data URL (length:",
-              viz.value.length,
-              ")"
-            );
-          } else if (typeof viz === "string") {
-            // It's a direct string (could be URL or base64)
-            if (viz.startsWith("data:image") || viz.startsWith("http")) {
-              visualizationUrl = viz;
-            } else {
-              visualizationUrl = `data:image/jpeg;base64,${viz}`;
-            }
-          } else if (viz.value) {
-            // Has a value property
-            const val = viz.value;
-            visualizationUrl =
-              val.startsWith("data:image") || val.startsWith("http")
-                ? val
-                : `data:image/jpeg;base64,${val}`;
-          }
-        }
-      }
-
-      if (visualizationUrl) {
-        console.log(
-          "Setting visualization image, URL starts with:",
-          visualizationUrl.substring(0, 50)
-        );
-        setOutputImage(visualizationUrl);
-      } else {
-        console.log("No visualization image found in response");
-      }
-    } catch (err) {
-      setError("Detection error. Please try again.");
-      console.error("Detection error:", err);
-    } finally {
-      setIsDetecting(false);
+    if (!detectRes.ok) {
+      throw new Error("Detection failed");
     }
-  };
+
+    const detectResult = await detectRes.json();
+    console.log("Detection result:", detectResult);
+
+    setDetections(detectResult);
+
+  } catch (err) {
+    console.error(err);
+    setError("Detection error. Please try again.");
+  } finally {
+    setIsDetecting(false);
+  }
+};
+
 
   return (
     <div className="flex flex-col items-center gap-6 w-full max-w-4xl mx-auto p-4">
